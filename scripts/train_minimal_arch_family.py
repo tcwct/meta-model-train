@@ -29,6 +29,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Train a family of sampled minimal architectures on diffusion u_k -> u_{k+1}.")
     p.add_argument("--architecture_csv", type=str, required=True)
     p.add_argument("--max_architectures", type=int, default=None)
+    p.add_argument("--architecture_id_min", type=int, default=None)
+    p.add_argument("--architecture_id_max", type=int, default=None)
     p.add_argument("--nx", type=int, default=16)
     p.add_argument("--ny", type=int, default=16)
     p.add_argument("--L", type=float, default=1.0)
@@ -108,11 +110,22 @@ def dump_json(path: str, payload: dict) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
-def load_architectures(csv_path: str, max_architectures: int | None) -> list[dict[str, str]]:
+def load_architectures(
+    csv_path: str,
+    max_architectures: int | None,
+    architecture_id_min: int | None,
+    architecture_id_max: int | None,
+) -> list[dict[str, str]]:
     with open(csv_path, "r", newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     if not rows:
         raise SystemExit(f"architecture csv is empty: {csv_path}")
+    if architecture_id_min is not None:
+        rows = [row for row in rows if int(row["architecture_id"]) >= architecture_id_min]
+    if architecture_id_max is not None:
+        rows = [row for row in rows if int(row["architecture_id"]) <= architecture_id_max]
+    if not rows:
+        raise SystemExit("no architectures left after applying architecture_id filters")
     if max_architectures is not None:
         if max_architectures < 1:
             raise SystemExit("max_architectures must be >= 1 when provided")
@@ -185,6 +198,13 @@ def append_summary_row(csv_path: str, row: dict[str, object]) -> None:
         if not file_exists:
             writer.writeheader()
         writer.writerow(row)
+
+
+def read_existing_summary_ids(csv_path: str) -> set[int]:
+    if not os.path.exists(csv_path):
+        return set()
+    with open(csv_path, "r", newline="", encoding="utf-8") as f:
+        return {int(row["architecture_id"]) for row in csv.DictReader(f)}
 
 
 def train_one_architecture(
@@ -305,11 +325,17 @@ def main() -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.torch_seed)
 
-    arch_rows = load_architectures(args.architecture_csv, args.max_architectures)
+    arch_rows = load_architectures(
+        args.architecture_csv,
+        args.max_architectures,
+        args.architecture_id_min,
+        args.architecture_id_max,
+    )
     device = pick_device(args.device)
     family_name = build_family_name(args, num_architectures=len(arch_rows))
     family_dir = ensure_dir(os.path.join(args.output_dir, family_name))
     summary_csv = os.path.join(family_dir, "family_summary.csv")
+    existing_summary_ids = read_existing_summary_ids(summary_csv)
 
     diff_cfg = Diffusion2DConfig(
         nx=args.nx,
@@ -334,7 +360,11 @@ def main() -> None:
             f"arch_id={arch_row['architecture_id']} code={arch_row['architecture_code']}"
         )
         summary = train_one_architecture(args, diff_cfg, device, family_dir, arch_row)
+        arch_id = int(summary["architecture_id"])
+        if arch_id in existing_summary_ids:
+            continue
         append_summary_row(summary_csv, summary)
+        existing_summary_ids.add(arch_id)
 
     total_runtime = time.perf_counter() - t0
     print(f"[train_minimal_arch_family] done family_dir={family_dir} total_runtime_s={total_runtime:.1f}")
@@ -342,4 +372,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

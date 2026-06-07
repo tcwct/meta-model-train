@@ -65,6 +65,23 @@ def _cached_k2_and_t(
     return K2, t
 
 
+@lru_cache(maxsize=128)
+def _cached_single_step_decays(
+    nx: int,
+    ny: int,
+    L: float,
+    nt: int,
+    T: float,
+    D: float,
+    k: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Decay factors for u_k and u_{k+1}; depends only on physics config and k."""
+    K2, t = _cached_k2_and_t(nx, ny, L, nt, T)
+    decay_k = np.exp(-D * K2 * t[k]).astype(np.complex128)
+    decay_k1 = np.exp(-D * K2 * t[k + 1]).astype(np.complex128)
+    return decay_k, decay_k1
+
+
 def generate_diffusion_2d_trajectory(
     cfg: Diffusion2DConfig,
     u0: Optional[np.ndarray] = None,
@@ -213,14 +230,19 @@ def generate_single_step_batch(
     if data_mode != "slices":
         raise ValueError(f"unsupported data_mode={data_mode}")
 
-    _x, _y, dx, dy = make_periodic_grid(cfg.L, cfg.nx, cfg.ny)
-    K2 = _build_k2(cfg.nx, cfg.ny, dx=dx, dy=dy)
-    t = np.linspace(0.0, cfg.T, cfg.nt, dtype=np.float64)
-    for i in range(B):
-        seed = int(seeds[i])
-        u0 = sample_u0_uniform(cfg.nx, cfg.ny, seed)
-        u_hat0 = np.fft.fft2(u0)
-        inputs[i, 0] = _u_at_time_index(cfg, u0, u_hat0, K2, t, k)
-        target[i, 0] = _u_at_time_index(cfg, u0, u_hat0, K2, t, k + 1)
+    decay_k, decay_k1 = _cached_single_step_decays(
+        int(cfg.nx),
+        int(cfg.ny),
+        float(cfg.L),
+        int(cfg.nt),
+        float(cfg.T),
+        float(cfg.D),
+        int(k),
+    )
+    u0_batch = np.stack([sample_u0_uniform(cfg.nx, cfg.ny, int(seed)) for seed in seeds], axis=0)
+    u_hat0_batch = np.fft.fft2(u0_batch, axes=(-2, -1))
+    u_k = np.fft.ifft2(u_hat0_batch * decay_k[None, :, :], axes=(-2, -1)).real.astype(np.float32)
+    u_k1 = np.fft.ifft2(u_hat0_batch * decay_k1[None, :, :], axes=(-2, -1)).real.astype(np.float32)
+    inputs[:, 0] = u_k
+    target[:, 0] = u_k1
     return inputs, target
-

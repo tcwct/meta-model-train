@@ -8,26 +8,37 @@ from pathlib import Path
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Aggregate per-architecture metrics into a meta dataset table.")
-    p.add_argument("--family_dir", type=str, required=True)
+    p.add_argument("--family_dir", type=str, nargs="+", required=True)
     p.add_argument("--output_csv", type=str, default=None)
     return p
 
 
 def main() -> None:
     args = build_argparser().parse_args()
-    family_dir = Path(args.family_dir).resolve()
-    manifest_path = family_dir / "family_manifest.json"
-    summary_csv = family_dir / "family_summary.csv"
-    if not manifest_path.exists():
-        raise SystemExit(f"missing family manifest: {manifest_path}")
-    if not summary_csv.exists():
-        raise SystemExit(f"missing family summary: {summary_csv}")
+    family_dirs = [Path(path).resolve() for path in args.family_dir]
+    manifests: list[dict[str, object]] = []
+    all_summary_rows: dict[str, dict[str, str]] = {}
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    output_csv = Path(args.output_csv).resolve() if args.output_csv else family_dir / "meta_dataset.csv"
+    for family_dir in family_dirs:
+        manifest_path = family_dir / "family_manifest.json"
+        summary_csv = family_dir / "family_summary.csv"
+        if not manifest_path.exists():
+            raise SystemExit(f"missing family manifest: {manifest_path}")
+        if not summary_csv.exists():
+            raise SystemExit(f"missing family summary: {summary_csv}")
 
-    with summary_csv.open("r", newline="", encoding="utf-8") as f:
-        summary_rows = {row["architecture_code"]: row for row in csv.DictReader(f)}
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifests.append(manifest)
+
+        with summary_csv.open("r", newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                all_summary_rows[row["architecture_code"]] = row
+
+    if not manifests:
+        raise SystemExit("no family manifests were provided")
+
+    base_manifest = manifests[0]
+    output_csv = Path(args.output_csv).resolve() if args.output_csv else family_dirs[0] / "meta_dataset.csv"
 
     fieldnames = (
         "architecture_id",
@@ -50,9 +61,20 @@ def main() -> None:
         writer = csv.DictWriter(f_out, fieldnames=fieldnames)
         writer.writeheader()
 
-        for arch_row in manifest["architecture_rows"]:
+        merged_arch_rows: dict[str, dict[str, str]] = {}
+        for manifest in manifests:
+            for arch_row in manifest["architecture_rows"]:
+                merged_arch_rows[arch_row["architecture_code"]] = arch_row
+
+        for architecture_code in sorted(
+            merged_arch_rows,
+            key=lambda code: int(merged_arch_rows[code]["architecture_id"]),
+        ):
+            arch_row = merged_arch_rows[architecture_code]
             architecture_code = arch_row["architecture_code"]
-            summary = summary_rows[architecture_code]
+            if architecture_code not in all_summary_rows:
+                raise SystemExit(f"missing summary row for architecture: {architecture_code}")
+            summary = all_summary_rows[architecture_code]
             run_dir = Path(summary["run_dir"])
             metrics_path = run_dir / "metrics.csv"
             if not metrics_path.exists():
@@ -71,10 +93,10 @@ def main() -> None:
                             "num_attention": summary["num_attention"],
                             "num_relu": summary["num_relu"],
                             "parameter_count": summary["parameter_count"],
-                            "k": manifest["k"],
-                            "max_steps": manifest["max_steps"],
-                            "val_every": manifest["val_every"],
-                            "family_name": manifest["family_name"],
+                            "k": base_manifest["k"],
+                            "max_steps": base_manifest["max_steps"],
+                            "val_every": base_manifest["val_every"],
+                            "family_name": base_manifest["family_name"],
                         }
                     )
 
