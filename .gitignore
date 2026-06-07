@@ -1,0 +1,21 @@
+# Training artifacts
+outputs/
+artifacts/
+data/
+checkpoints/
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Model/data binaries
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.npz

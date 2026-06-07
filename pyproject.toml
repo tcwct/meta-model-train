@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meta-model-train"
+version = "0.1.0"
+description = "Standalone training project for the minimal architecture meta-model experiments."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "tcwct and Codex" }
+]
+dependencies = [
+  "numpy",
+  "matplotlib",
+  "h5py",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

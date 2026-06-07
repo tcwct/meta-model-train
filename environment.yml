@@ -1,0 +1,21 @@
+# Minimal persistent conda environment for the meta-model training project.
+# Validated on the remote Ubuntu server with an NVIDIA A40.
+# We pin MKL/OpenMP below 2024.1 to avoid the known PyTorch import error:
+# undefined symbol: iJIT_NotifyEvent
+name: mpp-meta
+channels:
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.11
+  - pytorch=2.5.*
+  - torchvision=0.20.*
+  - pytorch-cuda=12.1
+  - numpy
+  - matplotlib
+  - h5py
+  - pip
+  - mkl<2024.1
+  - intel-openmp<2024.1
+
