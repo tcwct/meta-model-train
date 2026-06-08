@@ -4,8 +4,8 @@ import argparse
 import csv
 import json
 import math
+import os
 import random
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,14 +15,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-_ROOT = Path(__file__).resolve().parents[1]
-_SRC = _ROOT / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-
-ARCH_TOKEN_TO_ID = {"L": 0, "A": 1, "R": 2}
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -66,29 +58,25 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def parse_architecture_code(code: str) -> list[int]:
-    return [ARCH_TOKEN_TO_ID[tok] for tok in code.split("-")]
-
-
 def read_meta_rows(meta_csv: str) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     with open(meta_csv, "r", newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
+        reader = csv.DictReader(f)
+        count_fields = [field for field in (reader.fieldnames or []) if field.startswith("num_")]
+        for row in reader:
             step = int(row["step"])
             if step < 0:
                 continue
-            rows.append(
-                {
-                    "architecture_id": int(row["architecture_id"]),
-                    "architecture_code": row["architecture_code"],
-                    "step": step,
-                    "train_loss": float(row["train_loss"]),
-                    "val_loss": float(row["val_loss"]),
-                    "num_linear": float(row["num_linear"]),
-                    "num_attention": float(row["num_attention"]),
-                    "num_relu": float(row["num_relu"]),
-                }
-            )
+            item: dict[str, object] = {
+                "architecture_id": int(row["architecture_id"]),
+                "architecture_code": row["architecture_code"],
+                "step": step,
+                "train_loss": float(row["train_loss"]),
+                "val_loss": float(row["val_loss"]),
+            }
+            for field in count_fields:
+                item[field] = float(row[field])
+            rows.append(item)
     if not rows:
         raise SystemExit(f"no usable rows found in {meta_csv}")
     return rows
@@ -96,24 +84,20 @@ def read_meta_rows(meta_csv: str) -> list[dict[str, object]]:
 
 def build_grouped_splits(architecture_ids: list[int], num_folds: int, num_repeats: int) -> list[dict[str, object]]:
     unique_ids = sorted(set(architecture_ids))
-    if len(unique_ids) % num_folds != 0:
-        raise SystemExit(f"number of architectures={len(unique_ids)} must be divisible by num_folds={num_folds}")
-    fold_size = len(unique_ids) // num_folds
+    if num_folds < 3:
+        raise SystemExit("num_folds must be >= 3 because this protocol reserves separate val and test folds")
+    if len(unique_ids) < num_folds:
+        raise SystemExit(f"number of architectures={len(unique_ids)} must be >= num_folds={num_folds}")
     splits: list[dict[str, object]] = []
     for repeat in range(num_repeats):
         rng = random.Random(1000 + repeat)
         shuffled = unique_ids.copy()
         rng.shuffle(shuffled)
-        folds = [shuffled[i * fold_size : (i + 1) * fold_size] for i in range(num_folds)]
+        folds = [list(chunk) for chunk in np.array_split(np.asarray(shuffled, dtype=np.int64), num_folds)]
         for fold_idx in range(num_folds):
             test_ids = folds[fold_idx]
             val_ids = folds[(fold_idx + 1) % num_folds]
-            train_ids = [
-                aid
-                for j, fold in enumerate(folds)
-                if j not in (fold_idx, (fold_idx + 1) % num_folds)
-                for aid in fold
-            ]
+            train_ids = [aid for j, fold in enumerate(folds) if j not in (fold_idx, (fold_idx + 1) % num_folds) for aid in fold]
             splits.append(
                 {
                     "repeat": repeat,
@@ -127,6 +111,8 @@ def build_grouped_splits(architecture_ids: list[int], num_folds: int, num_repeat
 
 
 def encode_step_features(step: int, max_step: int) -> list[float]:
+    if max_step <= 0:
+        return [0.0, 0.0]
     step_norm = step / max_step
     log_norm = math.log1p(step) / math.log1p(max_step)
     return [step_norm, log_norm]
@@ -137,18 +123,28 @@ class MetaDataset:
     arch_ids: np.ndarray
     seq_tokens: np.ndarray
     count_features: np.ndarray
+    count_feature_names: tuple[str, ...]
     step_features: np.ndarray
     train_target: np.ndarray
     val_target: np.ndarray
     max_step: int
+    seq_len: int
+    vocab_size: int
 
 
 def build_meta_dataset(rows: list[dict[str, object]]) -> MetaDataset:
+    token_vocab = sorted({tok for row in rows for tok in str(row["architecture_code"]).split("-")})
+    token_to_id = {tok: idx for idx, tok in enumerate(token_vocab)}
+    count_feature_names = tuple(sorted(key for key in rows[0].keys() if str(key).startswith("num_")))
+    seq_len = len(str(rows[0]["architecture_code"]).split("-"))
     max_step = max(int(row["step"]) for row in rows)
     arch_ids = np.asarray([int(row["architecture_id"]) for row in rows], dtype=np.int64)
-    seq_tokens = np.asarray([parse_architecture_code(str(row["architecture_code"])) for row in rows], dtype=np.int64)
+    seq_tokens = np.asarray(
+        [[token_to_id[tok] for tok in str(row["architecture_code"]).split("-")] for row in rows],
+        dtype=np.int64,
+    )
     count_features = np.asarray(
-        [[float(row["num_linear"]), float(row["num_attention"]), float(row["num_relu"])] for row in rows],
+        [[float(row[name]) for name in count_feature_names] for row in rows],
         dtype=np.float32,
     )
     step_features = np.asarray([encode_step_features(int(row["step"]), max_step=max_step) for row in rows], dtype=np.float32)
@@ -158,10 +154,13 @@ def build_meta_dataset(rows: list[dict[str, object]]) -> MetaDataset:
         arch_ids=arch_ids,
         seq_tokens=seq_tokens,
         count_features=count_features,
+        count_feature_names=count_feature_names,
         step_features=step_features,
         train_target=train_target,
         val_target=val_target,
         max_step=max_step,
+        seq_len=seq_len,
+        vocab_size=len(token_vocab),
     )
 
 
@@ -181,10 +180,10 @@ class StepOnlyMLP(nn.Module):
 
 
 class CountsMLP(nn.Module):
-    def __init__(self, hidden_dim: int, out_dim: int):
+    def __init__(self, count_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(5, hidden_dim),
+            nn.Linear(count_dim + 2, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -197,10 +196,10 @@ class CountsMLP(nn.Module):
 
 
 class SequenceMLP(nn.Module):
-    def __init__(self, embedding_dim: int, hidden_dim: int, out_dim: int):
+    def __init__(self, vocab_size: int, seq_len: int, embedding_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
-        self.embedding = nn.Embedding(3, embedding_dim)
-        input_dim = 6 * embedding_dim + 2
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        input_dim = seq_len * embedding_dim + 2
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
@@ -215,13 +214,28 @@ class SequenceMLP(nn.Module):
         return self.net(x)
 
 
-def build_model(model_name: str, embedding_dim: int, hidden_dim: int, out_dim: int) -> nn.Module:
+def build_model(
+    model_name: str,
+    *,
+    count_dim: int,
+    vocab_size: int,
+    seq_len: int,
+    embedding_dim: int,
+    hidden_dim: int,
+    out_dim: int,
+) -> nn.Module:
     if model_name == "step_only":
         return StepOnlyMLP(hidden_dim=hidden_dim, out_dim=out_dim)
     if model_name == "counts":
-        return CountsMLP(hidden_dim=hidden_dim, out_dim=out_dim)
+        return CountsMLP(count_dim=count_dim, hidden_dim=hidden_dim, out_dim=out_dim)
     if model_name == "sequence":
-        return SequenceMLP(embedding_dim=embedding_dim, hidden_dim=hidden_dim, out_dim=out_dim)
+        return SequenceMLP(
+            vocab_size=vocab_size,
+            seq_len=seq_len,
+            embedding_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+            out_dim=out_dim,
+        )
     raise ValueError(f"unknown model_name={model_name}")
 
 
@@ -260,6 +274,37 @@ def compute_architecture_mae(arch_ids: np.ndarray, y_true: np.ndarray, y_pred: n
     return float(np.mean(per_arch))
 
 
+def standardize_target(
+    train_values: np.ndarray,
+    all_values: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    mean = np.mean(train_values, axis=0, keepdims=True)
+    std = np.std(train_values, axis=0, keepdims=True)
+    std = np.where(std < 1e-8, 1.0, std)
+    normalized = (all_values - mean) / std
+    return normalized, mean.astype(np.float32), std.astype(np.float32)
+
+
+def build_split_tensors(dataset: MetaDataset, split: dict[str, object], device: torch.device) -> dict[str, torch.Tensor]:
+    arch_ids = dataset.arch_ids
+    train_ids = set(int(x) for x in split["train_ids"])
+    val_ids = set(int(x) for x in split["val_ids"])
+    test_ids = set(int(x) for x in split["test_ids"])
+
+    train_mask = np.asarray([aid in train_ids for aid in arch_ids], dtype=bool)
+    val_mask = np.asarray([aid in val_ids for aid in arch_ids], dtype=bool)
+    test_mask = np.asarray([aid in test_ids for aid in arch_ids], dtype=bool)
+
+    return {
+        "seq_tokens": torch.from_numpy(dataset.seq_tokens).to(device=device, dtype=torch.long),
+        "count_features": torch.from_numpy(dataset.count_features).to(device=device, dtype=torch.float32),
+        "step_features": torch.from_numpy(dataset.step_features).to(device=device, dtype=torch.float32),
+        "train_mask": torch.from_numpy(train_mask).to(device=device, dtype=torch.bool),
+        "val_mask": torch.from_numpy(val_mask).to(device=device, dtype=torch.bool),
+        "test_mask": torch.from_numpy(test_mask).to(device=device, dtype=torch.bool),
+    }
+
+
 def train_one_split(
     dataset: MetaDataset,
     split: dict[str, object],
@@ -275,69 +320,63 @@ def train_one_split(
     embedding_dim: int,
     torch_seed: int,
 ) -> dict[str, object]:
-    repeat = int(split["repeat"])
-    fold = int(split["fold"])
-    train_ids = set(int(x) for x in split["train_ids"])
-    val_ids = set(int(x) for x in split["val_ids"])
-    test_ids = set(int(x) for x in split["test_ids"])
-
-    train_mask = np.asarray([aid in train_ids for aid in dataset.arch_ids], dtype=bool)
-    val_mask = np.asarray([aid in val_ids for aid in dataset.arch_ids], dtype=bool)
-    test_mask = np.asarray([aid in test_ids for aid in dataset.arch_ids], dtype=bool)
+    set_seed(torch_seed + 97 * int(split["repeat"]) + 13 * int(split["fold"]))
+    tensors = build_split_tensors(dataset, split, device)
+    seq_tokens = tensors["seq_tokens"]
+    count_features = tensors["count_features"]
+    step_features = tensors["step_features"]
+    train_mask = tensors["train_mask"]
+    val_mask = tensors["val_mask"]
+    test_mask = tensors["test_mask"]
 
     if target_name == "train":
         target_all = dataset.train_target
-        out_dim = 1
     elif target_name == "val":
         target_all = dataset.val_target
-        out_dim = 1
     elif target_name == "joint":
-        target_all = np.concatenate((dataset.train_target, dataset.val_target), axis=1)
-        out_dim = 2
+        target_all = np.concatenate([dataset.train_target, dataset.val_target], axis=1)
     else:
         raise ValueError(f"unknown target_name={target_name}")
 
-    train_target = target_all[train_mask]
-    target_mean = train_target.mean(axis=0, keepdims=True)
-    target_std = train_target.std(axis=0, keepdims=True)
-    target_std = np.where(target_std < 1e-8, 1.0, target_std)
+    target_norm, target_mean, target_std = standardize_target(target_all[train_mask.cpu().numpy()], target_all)
+    target_tensor = torch.from_numpy(target_norm).to(device=device, dtype=torch.float32)
+    out_dim = int(target_tensor.shape[1])
 
-    seq_tokens = torch.from_numpy(dataset.seq_tokens).to(device=device, dtype=torch.long)
-    count_features = torch.from_numpy(dataset.count_features).to(device=device, dtype=torch.float32)
-    step_features = torch.from_numpy(dataset.step_features).to(device=device, dtype=torch.float32)
-    target_tensor = torch.from_numpy((target_all - target_mean) / target_std).to(device=device, dtype=torch.float32)
-
-    train_idx = torch.from_numpy(np.where(train_mask)[0]).to(device)
-    val_idx = torch.from_numpy(np.where(val_mask)[0]).to(device)
-    test_idx = torch.from_numpy(np.where(test_mask)[0]).to(device)
-
-    set_seed(torch_seed + 100 * repeat + fold)
-    model = build_model(model_name=model_name, embedding_dim=embedding_dim, hidden_dim=hidden_dim, out_dim=out_dim).to(device)
+    model = build_model(
+        model_name,
+        count_dim=dataset.count_features.shape[1],
+        vocab_size=dataset.vocab_size,
+        seq_len=dataset.seq_len,
+        embedding_dim=embedding_dim,
+        hidden_dim=hidden_dim,
+        out_dim=out_dim,
+    ).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     best_state = None
-    best_val_loss = float("inf")
     best_epoch = -1
+    best_val_loss = float("inf")
     epochs_since_best = 0
-
     t0 = time.perf_counter()
+
     for epoch in range(max_epochs):
         model.train()
         opt.zero_grad(set_to_none=True)
         pred = model_forward(model, model_name, seq_tokens, count_features, step_features)
-        loss = F.mse_loss(pred[train_idx], target_tensor[train_idx])
-        loss.backward()
+        train_loss = F.mse_loss(pred[train_mask], target_tensor[train_mask])
+        train_loss.backward()
         opt.step()
 
         model.eval()
         with torch.no_grad():
             pred = model_forward(model, model_name, seq_tokens, count_features, step_features)
-            val_loss = float(F.mse_loss(pred[val_idx], target_tensor[val_idx]).item())
-        if val_loss < best_val_loss - 1e-8:
+            val_loss = float(F.mse_loss(pred[val_mask], target_tensor[val_mask]).item())
+
+        if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_epoch = epoch
-            epochs_since_best = 0
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            epochs_since_best = 0
         else:
             epochs_since_best += 1
         if epochs_since_best >= patience:
@@ -353,8 +392,8 @@ def train_one_split(
 
     runtime_s = time.perf_counter() - t0
     result: dict[str, object] = {
-        "repeat": repeat,
-        "fold": fold,
+        "repeat": split["repeat"],
+        "fold": split["fold"],
         "model_name": model_name,
         "target_name": target_name,
         "best_epoch": best_epoch,
@@ -366,8 +405,9 @@ def train_one_split(
         true = target_all[:, 0]
         pred = pred_all[:, 0]
         for split_name, mask in (("train", train_mask), ("val", val_mask), ("test", test_mask)):
-            metrics = compute_metrics(true[mask], pred[mask])
-            arch_mae = compute_architecture_mae(dataset.arch_ids[mask], true[mask], pred[mask])
+            mask_np = mask.cpu().numpy()
+            metrics = compute_metrics(true[mask_np], pred[mask_np])
+            arch_mae = compute_architecture_mae(dataset.arch_ids[mask_np], true[mask_np], pred[mask_np])
             for key, value in metrics.items():
                 result[f"{split_name}_{key}"] = value
             result[f"{split_name}_arch_mae"] = arch_mae
@@ -376,8 +416,9 @@ def train_one_split(
             true = target_all[:, head_idx]
             pred = pred_all[:, head_idx]
             for split_name, mask in (("train", train_mask), ("val", val_mask), ("test", test_mask)):
-                metrics = compute_metrics(true[mask], pred[mask])
-                arch_mae = compute_architecture_mae(dataset.arch_ids[mask], true[mask], pred[mask])
+                mask_np = mask.cpu().numpy()
+                metrics = compute_metrics(true[mask_np], pred[mask_np])
+                arch_mae = compute_architecture_mae(dataset.arch_ids[mask_np], true[mask_np], pred[mask_np])
                 for key, value in metrics.items():
                     result[f"{head_name}_{split_name}_{key}"] = value
                 result[f"{head_name}_{split_name}_arch_mae"] = arch_mae
@@ -391,8 +432,8 @@ def summarize_results(results: list[dict[str, object]]) -> dict[str, object]:
         grouped.setdefault((str(row["model_name"]), str(row["target_name"])), []).append(row)
 
     summary: dict[str, object] = {}
-    for model_name, target_name in grouped:
-        rows = grouped[(model_name, target_name)]
+    for key, rows in grouped.items():
+        model_name, target_name = key
         metric_summary: dict[str, float] = {}
         numeric_keys = [k for k in rows[0].keys() if k not in ("model_name", "target_name")]
         for metric_key in numeric_keys:
@@ -517,6 +558,9 @@ def main() -> None:
         "weight_decay": args.weight_decay,
         "hidden_dim": args.hidden_dim,
         "embedding_dim": args.embedding_dim,
+        "count_feature_names": list(dataset.count_feature_names),
+        "token_vocab_size": dataset.vocab_size,
+        "sequence_length": dataset.seq_len,
         "experiments": [{"model_name": m, "target_name": t} for m, t in experiments],
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -558,4 +602,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

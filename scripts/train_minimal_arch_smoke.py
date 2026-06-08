@@ -35,9 +35,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--val_step", type=int, default=0)
     p.add_argument("--torch_seed", type=int, default=25)
     p.add_argument("--patch_size", type=int, default=2)
-    p.add_argument("--hidden_dim", type=int, default=16)
+    p.add_argument("--hidden_dim", type=int, default=8)
     p.add_argument("--num_heads", type=int, default=1)
-    p.add_argument("--architecture_code", type=str, default="L-R-L-A-L-R")
+    p.add_argument("--architecture_code", type=str, default="M-A-M-A-M-A-M-A")
     p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--val_batch_size", type=int, default=128)
     p.add_argument("--max_steps", type=int, default=500)
@@ -178,6 +178,7 @@ def main() -> None:
     cfg_payload = vars(args).copy()
     cfg_payload["architecture_code"] = model.architecture_code
     cfg_payload["architecture_tokens"] = model.architecture_tokens
+    cfg_payload["depth"] = model.depth
     cfg_payload["device_resolved"] = str(device)
     dump_json(os.path.join(out_dir, "config.json"), cfg_payload)
 
@@ -194,6 +195,7 @@ def main() -> None:
     print(f"[train_minimal_arch_smoke] step=-1 val_loss={init_val:.6f}")
 
     t0 = time.perf_counter()
+    last_train_loss: float | None = None
     for step in range(args.max_steps):
         model.train()
         seeds = sample_u0_seeds_batch(args.base_seed, step, args.batch_size)
@@ -207,18 +209,10 @@ def main() -> None:
         loss.backward()
         opt.step()
 
-        train_loss = float(loss.item())
+        last_train_loss = float(loss.item())
         if step % args.log_every == 0 or step == args.max_steps - 1:
             elapsed = time.perf_counter() - t0
-            append_metrics_row(
-                csv_path,
-                step=step,
-                architecture_code=model.architecture_code,
-                train_loss=train_loss,
-                val_loss=None,
-                elapsed_s=elapsed,
-            )
-            print(f"[train_minimal_arch_smoke] step={step} train_loss={train_loss:.6f}")
+            print(f"[train_minimal_arch_smoke] step={step} train_loss={last_train_loss:.6f} elapsed_s={elapsed:.1f}")
 
         if step % args.val_every == 0 or step == args.max_steps - 1:
             elapsed = time.perf_counter() - t0
@@ -227,11 +221,13 @@ def main() -> None:
                 csv_path,
                 step=step,
                 architecture_code=model.architecture_code,
-                train_loss=None,
+                train_loss=last_train_loss,
                 val_loss=val_loss,
                 elapsed_s=elapsed,
             )
-            print(f"[train_minimal_arch_smoke] step={step} val_loss={val_loss:.6f}")
+            print(f"[train_minimal_arch_smoke] step={step} val_loss={val_loss:.6f} elapsed_s={elapsed:.1f}")
+
+    print(f"[train_minimal_arch_smoke] done output_dir={out_dir}")
 
 
 if __name__ == "__main__":

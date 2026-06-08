@@ -9,7 +9,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-ARCH_TOKENS = ("L", "A", "R")
+ARCH_TOKEN_SPECS = {
+    "M": {"name": "mlp", "count_key": "num_mlp"},
+    "A": {"name": "attention", "count_key": "num_attention"},
+}
+ARCH_TOKENS = tuple(ARCH_TOKEN_SPECS.keys())
 
 
 def canonicalize_architecture_code(code: str) -> str:
@@ -30,19 +34,16 @@ def parse_architecture_code(code: str) -> list[str]:
     return tokens
 
 
-def validate_architecture_tokens(tokens: Iterable[str], expected_length: int) -> list[str]:
+def validate_architecture_tokens(tokens: Iterable[str], expected_length: int | None = None) -> list[str]:
     toks = list(tokens)
-    if len(toks) != expected_length:
+    if not toks:
+        raise ValueError("architecture must contain at least one token")
+    if expected_length is not None and len(toks) != expected_length:
         raise ValueError(f"architecture must have exactly {expected_length} tokens, got {len(toks)}")
-    if toks[0] == "R":
-        raise ValueError("first architecture token may not be ReLU")
-    for left, right in zip(toks, toks[1:]):
-        if left == "R" and right == "R":
-            raise ValueError("adjacent ReLU tokens are not allowed")
     return toks
 
 
-def is_legal_architecture_tokens(tokens: Iterable[str], expected_length: int) -> bool:
+def is_legal_architecture_tokens(tokens: Iterable[str], expected_length: int | None = None) -> bool:
     try:
         validate_architecture_tokens(tokens, expected_length=expected_length)
     except ValueError:
@@ -50,7 +51,7 @@ def is_legal_architecture_tokens(tokens: Iterable[str], expected_length: int) ->
     return True
 
 
-def enumerate_legal_architecture_codes(expected_length: int = 6) -> list[str]:
+def enumerate_legal_architecture_codes(expected_length: int = 8) -> list[str]:
     legal_codes: list[str] = []
     for tokens in product(ARCH_TOKENS, repeat=expected_length):
         if is_legal_architecture_tokens(tokens, expected_length=expected_length):
@@ -60,11 +61,7 @@ def enumerate_legal_architecture_codes(expected_length: int = 6) -> list[str]:
 
 def architecture_token_counts(code: str) -> dict[str, int]:
     tokens = parse_architecture_code(code)
-    return {
-        "num_linear": sum(tok == "L" for tok in tokens),
-        "num_attention": sum(tok == "A" for tok in tokens),
-        "num_relu": sum(tok == "R" for tok in tokens),
-    }
+    return {spec["count_key"]: sum(tok == token for tok in tokens) for token, spec in ARCH_TOKEN_SPECS.items()}
 
 
 def _periodic_delta_indices(length: int, device: torch.device) -> torch.Tensor:
@@ -86,21 +83,24 @@ class PeriodicRelativeBias1D(nn.Module):
         return bias.permute(2, 0, 1).unsqueeze(0).contiguous()
 
 
-class TokenLinearOp(nn.Module):
+def zero_init_linear(linear: nn.Linear) -> None:
+    nn.init.zeros_(linear.weight)
+    if linear.bias is not None:
+        nn.init.zeros_(linear.bias)
+
+
+class ResidualMLPOp(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
-        self.proj = nn.Linear(dim, dim, bias=True)
+        self.fc1 = nn.Linear(dim, dim, bias=True)
+        self.fc2 = nn.Linear(dim, dim, bias=True)
+        zero_init_linear(self.fc2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.proj(x)
+        return x + self.fc2(F.relu(self.fc1(x)))
 
 
-class ReLUOp(nn.Module):
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.relu(x)
-
-
-class AxialAttentionOp(nn.Module):
+class ResidualAxialAttentionOp(nn.Module):
     def __init__(self, dim: int, height: int, width: int, num_heads: int = 1):
         super().__init__()
         if dim % num_heads != 0:
@@ -115,6 +115,8 @@ class AxialAttentionOp(nn.Module):
         self.out_row = nn.Linear(dim, dim, bias=True)
         self.qkv_col = nn.Linear(dim, 3 * dim, bias=True)
         self.out_col = nn.Linear(dim, dim, bias=True)
+        zero_init_linear(self.out_row)
+        zero_init_linear(self.out_col)
 
         self.row_bias = PeriodicRelativeBias1D(width, num_heads)
         self.col_bias = PeriodicRelativeBias1D(height, num_heads)
@@ -141,7 +143,7 @@ class AxialAttentionOp(nn.Module):
         col_out = self._apply_attention(col_in, self.qkv_col, self.out_col, self.col_bias())
         col_out = col_out.reshape(batch, width, height, dim).permute(0, 2, 1, 3).contiguous()
 
-        return 0.5 * (row_out + col_out)
+        return x + 0.5 * (row_out + col_out)
 
 
 def patchify_2d(x: torch.Tensor, patch_size: int) -> torch.Tensor:
@@ -171,10 +173,9 @@ def unpatchify_2d(tokens: torch.Tensor, patch_size: int) -> torch.Tensor:
 class MinimalArchConfig:
     image_size: int = 16
     patch_size: int = 2
-    hidden_dim: int = 16
+    hidden_dim: int = 8
     num_heads: int = 1
-    architecture_code: str = "L-R-L-A-L-R"
-    use_residual: bool = True
+    architecture_code: str = "M-A-M-A-M-A-M-A"
 
 
 class MinimalArchModel(nn.Module):
@@ -187,22 +188,20 @@ class MinimalArchModel(nn.Module):
         self.hp = cfg.image_size // cfg.patch_size
         self.wp = cfg.image_size // cfg.patch_size
 
-        tokens = validate_architecture_tokens(parse_architecture_code(cfg.architecture_code), expected_length=6)
+        tokens = validate_architecture_tokens(parse_architecture_code(cfg.architecture_code))
         self.architecture_tokens = tokens
         self.architecture_code = canonicalize_architecture_code(cfg.architecture_code)
-        self.use_residual = bool(cfg.use_residual)
+        self.depth = len(tokens)
 
         self.input_proj = nn.Linear(self.patch_dim, cfg.hidden_dim, bias=True)
         self.output_proj = nn.Linear(cfg.hidden_dim, self.patch_dim, bias=True)
 
         ops: list[nn.Module] = []
         for tok in tokens:
-            if tok == "L":
-                ops.append(TokenLinearOp(cfg.hidden_dim))
+            if tok == "M":
+                ops.append(ResidualMLPOp(cfg.hidden_dim))
             elif tok == "A":
-                ops.append(AxialAttentionOp(cfg.hidden_dim, self.hp, self.wp, num_heads=cfg.num_heads))
-            elif tok == "R":
-                ops.append(ReLUOp())
+                ops.append(ResidualAxialAttentionOp(cfg.hidden_dim, self.hp, self.wp, num_heads=cfg.num_heads))
             else:
                 raise AssertionError(f"unreachable token: {tok}")
         self.ops = nn.ModuleList(ops)
@@ -213,10 +212,6 @@ class MinimalArchModel(nn.Module):
         patches = patchify_2d(x, self.cfg.patch_size)
         hidden = self.input_proj(patches)
         for op in self.ops:
-            update = op(hidden)
-            if self.use_residual:
-                hidden = hidden + update
-            else:
-                hidden = update
+            hidden = op(hidden)
         pred_patches = self.output_proj(hidden)
         return unpatchify_2d(pred_patches, self.cfg.patch_size)

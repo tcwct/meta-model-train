@@ -49,7 +49,7 @@ def main() -> None:
 
     smoke_run_name = "smoke"
     family_name = "family"
-    architecture_csv = artifact_dir / f"sampled_architectures_L6_n{args.sample_size}_seed25.csv"
+    architecture_csv = artifact_dir / f"sampled_architectures_L8_n{args.sample_size}_seed25.csv"
     family_dir = family_output_root / family_name
 
     python_exe = sys.executable

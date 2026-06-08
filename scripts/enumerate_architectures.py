@@ -17,7 +17,7 @@ from meta_model_train.minimal_arch_model import architecture_token_counts, enume
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Enumerate legal minimal architectures and sample a subset.")
-    p.add_argument("--depth", type=int, default=6)
+    p.add_argument("--depth", type=int, default=8)
     p.add_argument("--sample_size", type=int, default=50)
     p.add_argument("--sample_seed", type=int, default=25)
     p.add_argument("--output_dir", type=str, default=str(_ROOT / "artifacts"))
@@ -31,7 +31,10 @@ def ensure_dir(path: str) -> Path:
 
 
 def write_architecture_csv(path: Path, codes: list[str]) -> None:
-    fieldnames = ("architecture_id", "architecture_code", "num_linear", "num_attention", "num_relu")
+    if not codes:
+        raise ValueError("codes must be non-empty")
+    count_keys = tuple(architecture_token_counts(codes[0]).keys())
+    fieldnames = ("architecture_id", "architecture_code", *count_keys)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

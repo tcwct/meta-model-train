@@ -42,6 +42,11 @@ def main() -> None:
     family_name = args.family_name or base_manifest["family_name"]
     output_csv = Path(args.output_csv).resolve() if args.output_csv else family_dirs[0] / "meta_dataset.csv"
 
+    sample_summary = next(iter(all_summary_rows.values()), None)
+    if sample_summary is None:
+        raise SystemExit("family summaries are empty")
+    count_fields = sorted(key for key in sample_summary.keys() if key.startswith("num_"))
+
     fieldnames = (
         "architecture_id",
         "architecture_code",
@@ -49,9 +54,7 @@ def main() -> None:
         "train_loss",
         "val_loss",
         "elapsed_s",
-        "num_linear",
-        "num_attention",
-        "num_relu",
+        *count_fields,
         "parameter_count",
         "k",
         "max_steps",
@@ -91,9 +94,7 @@ def main() -> None:
                             "train_loss": metric_row["train_loss"],
                             "val_loss": metric_row["val_loss"],
                             "elapsed_s": metric_row["elapsed_s"],
-                            "num_linear": summary["num_linear"],
-                            "num_attention": summary["num_attention"],
-                            "num_relu": summary["num_relu"],
+                            **{field: summary[field] for field in count_fields},
                             "parameter_count": summary["parameter_count"],
                             "k": base_manifest["k"],
                             "max_steps": base_manifest["max_steps"],
