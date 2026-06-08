@@ -174,6 +174,7 @@ class MinimalArchConfig:
     hidden_dim: int = 16
     num_heads: int = 1
     architecture_code: str = "L-R-L-A-L-R"
+    use_residual: bool = True
 
 
 class MinimalArchModel(nn.Module):
@@ -189,6 +190,7 @@ class MinimalArchModel(nn.Module):
         tokens = validate_architecture_tokens(parse_architecture_code(cfg.architecture_code), expected_length=6)
         self.architecture_tokens = tokens
         self.architecture_code = canonicalize_architecture_code(cfg.architecture_code)
+        self.use_residual = bool(cfg.use_residual)
 
         self.input_proj = nn.Linear(self.patch_dim, cfg.hidden_dim, bias=True)
         self.output_proj = nn.Linear(cfg.hidden_dim, self.patch_dim, bias=True)
@@ -211,7 +213,10 @@ class MinimalArchModel(nn.Module):
         patches = patchify_2d(x, self.cfg.patch_size)
         hidden = self.input_proj(patches)
         for op in self.ops:
-            hidden = op(hidden)
+            update = op(hidden)
+            if self.use_residual:
+                hidden = hidden + update
+            else:
+                hidden = update
         pred_patches = self.output_proj(hidden)
         return unpatchify_2d(pred_patches, self.cfg.patch_size)
-

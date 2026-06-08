@@ -46,9 +46,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--patch_size", type=int, default=2)
     p.add_argument("--hidden_dim", type=int, default=16)
     p.add_argument("--num_heads", type=int, default=1)
+    p.add_argument("--disable_residual", action="store_true")
     p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--val_batch_size", type=int, default=128)
-    p.add_argument("--max_steps", type=int, default=500)
+    p.add_argument("--max_steps", type=int, default=1000)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.0)
     p.add_argument("--log_every", type=int, default=20)
@@ -232,6 +233,7 @@ def train_one_architecture(
         hidden_dim=args.hidden_dim,
         num_heads=args.num_heads,
         architecture_code=architecture_code,
+        use_residual=not args.disable_residual,
     )
     model = MinimalArchModel(model_cfg).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -241,6 +243,7 @@ def train_one_architecture(
     cfg_payload["architecture_id"] = architecture_id
     cfg_payload["architecture_code"] = model.architecture_code
     cfg_payload["architecture_tokens"] = model.architecture_tokens
+    cfg_payload["use_residual"] = model.use_residual
     cfg_payload["device_resolved"] = str(device)
     cfg_payload["parameter_count"] = parameter_count
     cfg_payload.update(architecture_token_counts(model.architecture_code))
