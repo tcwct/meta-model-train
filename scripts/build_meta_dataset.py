@@ -10,6 +10,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Aggregate per-architecture metrics into a meta dataset table.")
     p.add_argument("--family_dir", type=str, nargs="+", required=True)
     p.add_argument("--output_csv", type=str, default=None)
+    p.add_argument("--family_name", type=str, default=None)
     return p
 
 
@@ -38,6 +39,7 @@ def main() -> None:
         raise SystemExit("no family manifests were provided")
 
     base_manifest = manifests[0]
+    family_name = args.family_name or base_manifest["family_name"]
     output_csv = Path(args.output_csv).resolve() if args.output_csv else family_dirs[0] / "meta_dataset.csv"
 
     fieldnames = (
@@ -96,7 +98,7 @@ def main() -> None:
                             "k": base_manifest["k"],
                             "max_steps": base_manifest["max_steps"],
                             "val_every": base_manifest["val_every"],
-                            "family_name": base_manifest["family_name"],
+                            "family_name": family_name,
                         }
                     )
 
