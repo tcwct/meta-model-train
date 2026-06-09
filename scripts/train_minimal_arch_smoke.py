@@ -44,7 +44,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.0)
     p.add_argument("--log_every", type=int, default=20)
-    p.add_argument("--val_every", type=int, default=50)
+    p.add_argument("--val_every", type=int, default=10)
     p.add_argument("--data_mode", type=str, default="slices", choices=("full", "slices"))
     p.add_argument("--device", type=str, default="auto", choices=("auto", "cuda", "cpu"))
     p.add_argument("--output_dir", type=str, default=os.path.join("outputs", "toy_diffusion", "meta_model_smoke"))
