@@ -110,6 +110,86 @@ def dump_json(path: str, payload: dict) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
+def summarize_architecture_rows(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return "count=0"
+    first = rows[0]
+    last = rows[-1]
+    return (
+        f"count={len(rows)} "
+        f"first_id={first.get('architecture_id')} first_code={first.get('architecture_code')} "
+        f"last_id={last.get('architecture_id')} last_code={last.get('architecture_code')}"
+    )
+
+
+def validate_existing_family_manifest(family_dir: str, proposed_manifest: dict[str, object]) -> bool:
+    manifest_path = os.path.join(family_dir, "family_manifest.json")
+    if not os.path.exists(manifest_path):
+        return False
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        existing_manifest = json.load(f)
+
+    keys_to_compare = (
+        "architecture_id_min",
+        "architecture_id_max",
+        "max_architectures",
+        "nx",
+        "ny",
+        "L",
+        "D",
+        "T",
+        "nt",
+        "cfg_seed",
+        "k",
+        "base_seed",
+        "val_base_seed",
+        "val_step",
+        "torch_seed",
+        "patch_size",
+        "hidden_dim",
+        "num_heads",
+        "batch_size",
+        "val_batch_size",
+        "max_steps",
+        "lr",
+        "weight_decay",
+        "log_every",
+        "val_every",
+        "data_mode",
+    )
+    mismatches: list[str] = []
+    for key in keys_to_compare:
+        if existing_manifest.get(key) != proposed_manifest.get(key):
+            mismatches.append(
+                f"{key}: existing={existing_manifest.get(key)!r} proposed={proposed_manifest.get(key)!r}"
+            )
+
+    existing_rows = existing_manifest.get("architecture_rows")
+    proposed_rows = proposed_manifest.get("architecture_rows")
+    if existing_rows != proposed_rows:
+        existing_summary = summarize_architecture_rows(list(existing_rows or []))
+        proposed_summary = summarize_architecture_rows(list(proposed_rows or []))
+        mismatches.append(
+            "architecture_rows: "
+            f"existing=({existing_summary}) proposed=({proposed_summary})"
+        )
+
+    if mismatches:
+        mismatch_text = "\n".join(f"  - {item}" for item in mismatches)
+        raise SystemExit(
+            "existing family_manifest.json is incompatible with the requested run.\n"
+            f"family_dir={family_dir}\n"
+            "Refusing to mix different training settings in one family directory.\n"
+            "Use a new --family_name for the new run, or move/remove the old directory first.\n"
+            "Completed architectures cannot be extended in-place to a larger max_steps because this "
+            "workflow does not save model checkpoints.\n"
+            f"Mismatches:\n{mismatch_text}"
+        )
+
+    return True
+
+
 def load_architectures(
     csv_path: str,
     max_architectures: int | None,
@@ -351,7 +431,9 @@ def main() -> None:
     family_manifest["family_name"] = family_name
     family_manifest["num_architectures"] = len(arch_rows)
     family_manifest["architecture_rows"] = arch_rows
-    dump_json(os.path.join(family_dir, "family_manifest.json"), family_manifest)
+    manifest_exists = validate_existing_family_manifest(family_dir, family_manifest)
+    if not manifest_exists:
+        dump_json(os.path.join(family_dir, "family_manifest.json"), family_manifest)
 
     t0 = time.perf_counter()
     for idx, arch_row in enumerate(arch_rows, start=1):

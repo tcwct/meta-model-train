@@ -15,6 +15,7 @@ COMMAND_TO_SCRIPT = {
     "smoke-train": "train_minimal_arch_smoke.py",
     "enumerate": "enumerate_architectures.py",
     "family-train": "train_minimal_arch_family.py",
+    "single-arch-seed-scaling": "run_single_arch_seed_scaling.py",
     "build-meta-dataset": "build_meta_dataset.py",
     "plot-family-curves": "plot_family_curves.py",
     "plot-meta-spread": "plot_meta_dataset_spread.py",
