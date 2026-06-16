@@ -130,6 +130,7 @@ python scripts/build_meta_dataset.py \
 - The active training setting is documented in [docs/2.0_setting说明.md](C:/Users/11599/Desktop/本科生科研/毕业论文/multiple_physics_pretraining-main/meta-model-train/docs/2.0_setting说明.md).
 - A server-first walkthrough is in [docs/首跑说明.md](C:/Users/11599/Desktop/本科生科研/毕业论文/multiple_physics_pretraining-main/meta-model-train/docs/首跑说明.md).
 - The 2.0 full-coverage 2000-step server workflow is documented in [docs/服务器2.0全量2000步训练说明.md](C:/Users/11599/Desktop/本科生科研/毕业论文/multiple_physics_pretraining-main/meta-model-train/docs/服务器2.0全量2000步训练说明.md).
+- The 2.1 full-coverage 16000-step server workflow is documented in [docs/服务器2.1全量16000步训练说明.md](C:/Users/11599/Desktop/本科生科研/毕业论文/multiple_physics_pretraining-main/meta-model-train/docs/服务器2.1全量16000步训练说明.md).
 - A one-command local or server self-check is available in [scripts/run_smoke_pipeline.py](C:/Users/11599/Desktop/本科生科研/毕业论文/multiple_physics_pretraining-main/meta-model-train/scripts/run_smoke_pipeline.py).
 - A unified command entrypoint is available in [scripts/meta_model_cli.py](C:/Users/11599/Desktop/本科生科研/毕业论文/multiple_physics_pretraining-main/meta-model-train/scripts/meta_model_cli.py).
 - A concise repository bootstrap checklist is in [docs/建仓与首训清单.md](C:/Users/11599/Desktop/本科生科研/毕业论文/multiple_physics_pretraining-main/meta-model-train/docs/建仓与首训清单.md).
